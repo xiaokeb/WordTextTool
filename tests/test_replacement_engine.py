@@ -1,9 +1,13 @@
 import pytest
+from docx import Document
+from docx.enum.text import WD_BREAK
+from docx.shared import Pt, RGBColor
 
 from word_text_tool.models import ReplacementRule
 from word_text_tool.replacement_engine import (
     RuleValidationError,
     find_matches,
+    replace_runs,
     replace_text,
     validate_rule,
 )
@@ -80,3 +84,118 @@ def test_rule_rejects_replacement_longer_than_10000_characters():
 def test_rule_matches_surrounding_spaces_and_punctuation_exactly():
     rule = ReplacementRule(" 项目! ", "替")
     assert replace_text(" 项目! 项目!", (rule,)).text == "替项目!"
+
+
+def test_replace_across_runs_uses_first_run_format_without_duplication():
+    paragraph = Document().add_paragraph()
+    first = paragraph.add_run("xxx")
+    first.font.name = "Microsoft YaHei UI"
+    first.font.size = Pt(12)
+    first.font.color.rgb = RGBColor(255, 0, 0)
+    second = paragraph.add_run("公司及附件")
+    second.bold = True
+
+    count = replace_runs((first, second), (ReplacementRule("xxx公司", "yyy公司"),))
+
+    assert count == 1
+    assert paragraph.text == "yyy公司及附件"
+    assert first.text == "yyy公司"
+    assert first.font.name == "Microsoft YaHei UI"
+    assert first.font.size == Pt(12)
+    assert first.font.color.rgb == RGBColor(255, 0, 0)
+    assert second.text == "及附件"
+    assert second.bold is True
+
+
+def test_replace_runs_handles_multiple_matches_in_one_run_right_to_left():
+    paragraph = Document().add_paragraph()
+    run = paragraph.add_run("甲旧值乙旧值丙")
+
+    count = replace_runs((run,), (ReplacementRule("旧值", "新"),))
+
+    assert count == 2
+    assert run.text == "甲新乙新丙"
+
+
+def test_replace_runs_handles_multiple_matches_across_distinct_runs():
+    paragraph = Document().add_paragraph()
+    first = paragraph.add_run("甲旧")
+    second = paragraph.add_run("值乙")
+    third = paragraph.add_run("旧值丙")
+
+    count = replace_runs((first, second, third), (ReplacementRule("旧值", "新内容"),))
+
+    assert count == 2
+    assert paragraph.text == "甲新内容乙新内容丙"
+    assert first.text == "甲新内容"
+    assert second.text == "乙"
+    assert third.text == "新内容丙"
+
+
+def test_replace_runs_spans_four_runs_and_keeps_unaffected_run_format():
+    paragraph = Document().add_paragraph()
+    prefix = paragraph.add_run("前A")
+    middle_one = paragraph.add_run("B")
+    middle_two = paragraph.add_run("C")
+    suffix = paragraph.add_run("D后")
+    suffix.italic = True
+
+    count = replace_runs(
+        (prefix, middle_one, middle_two, suffix),
+        (ReplacementRule("ABCD", "X"),),
+    )
+
+    assert count == 1
+    assert paragraph.text == "前X后"
+    assert [run.text for run in paragraph.runs] == ["前X", "", "", "后"]
+    assert suffix.italic is True
+
+
+def test_replace_runs_handles_empty_run_and_exact_run_boundaries():
+    paragraph = Document().add_paragraph()
+    first = paragraph.add_run("前")
+    empty = paragraph.add_run("")
+    second = paragraph.add_run("旧")
+    third = paragraph.add_run("值")
+    fourth = paragraph.add_run("后")
+
+    count = replace_runs(
+        (first, empty, second, third, fourth),
+        (ReplacementRule("旧值", "新"),),
+    )
+
+    assert count == 1
+    assert paragraph.text == "前新后"
+    assert [run.text for run in paragraph.runs] == ["前", "", "新", "", "后"]
+
+
+@pytest.mark.parametrize(
+    ("replacement", "expected"),
+    [("更长的新值", "甲更长的新值乙"), ("新", "甲新乙"), ("", "甲乙")],
+)
+def test_replace_runs_writes_length_changes_from_original_offsets(replacement, expected):
+    paragraph = Document().add_paragraph()
+    first = paragraph.add_run("甲旧")
+    second = paragraph.add_run("值乙")
+
+    count = replace_runs((first, second), (ReplacementRule("旧值", replacement),))
+
+    assert count == 1
+    assert paragraph.text == expected
+    assert second.text == "乙"
+
+
+def test_replace_runs_preserves_soft_break_semantics():
+    paragraph = Document().add_paragraph()
+    run = paragraph.add_run("第一行")
+    run.add_break(WD_BREAK.LINE)
+    run.add_text("第二行")
+
+    count = replace_runs(
+        (run,),
+        (ReplacementRule("第一行\n第二行", "新一行\n新二行"),),
+    )
+
+    assert count == 1
+    assert run.text == "新一行\n新二行"
+    assert paragraph.text == "新一行\n新二行"

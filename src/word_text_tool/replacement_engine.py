@@ -1,6 +1,8 @@
 from dataclasses import dataclass
 from typing import Sequence
 
+from docx.text.run import Run
+
 from word_text_tool.models import ReplacementRule
 
 
@@ -72,3 +74,53 @@ def replace_text(text: str, rules: Sequence[ReplacementRule]) -> ReplacementOutc
         cursor = match.end
     parts.append(text[cursor:])
     return ReplacementOutcome(text="".join(parts), count=len(matches))
+
+
+def _locate_start(lengths: Sequence[int], offset: int) -> tuple[int, int]:
+    cursor = 0
+    for index, length in enumerate(lengths):
+        if offset < cursor + length:
+            return index, offset - cursor
+        cursor += length
+    return len(lengths) - 1, lengths[-1]
+
+
+def _locate_end(lengths: Sequence[int], offset: int) -> tuple[int, int]:
+    cursor = 0
+    for index, length in enumerate(lengths):
+        cursor += length
+        if offset <= cursor:
+            return index, offset - (cursor - length)
+    return len(lengths) - 1, lengths[-1]
+
+
+def replace_runs(runs: Sequence[Run], rules: Sequence[ReplacementRule]) -> int:
+    if not runs:
+        return 0
+
+    original_texts = [run.text for run in runs]
+    lengths = [len(text) for text in original_texts]
+    matches = find_matches("".join(original_texts), rules)
+    if not matches:
+        return 0
+
+    rewritten = original_texts.copy()
+    for match in reversed(matches):
+        start_index, start_offset = _locate_start(lengths, match.start)
+        end_index, end_offset = _locate_end(lengths, match.end)
+        if start_index == end_index:
+            current = rewritten[start_index]
+            rewritten[start_index] = (
+                current[:start_offset] + match.replacement + current[end_offset:]
+            )
+            continue
+
+        rewritten[start_index] = rewritten[start_index][:start_offset] + match.replacement
+        for index in range(start_index + 1, end_index):
+            rewritten[index] = ""
+        rewritten[end_index] = rewritten[end_index][end_offset:]
+
+    for run, old_text, new_text in zip(runs, original_texts, rewritten, strict=True):
+        if old_text != new_text:
+            run.text = new_text
+    return len(matches)
