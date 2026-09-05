@@ -1,7 +1,12 @@
 import pytest
 
 from word_text_tool.models import ReplacementRule
-from word_text_tool.replacement_engine import RuleValidationError, replace_text, validate_rule
+from word_text_tool.replacement_engine import (
+    RuleValidationError,
+    find_matches,
+    replace_text,
+    validate_rule,
+)
 
 
 def test_replacement_is_non_cascading_and_not_duplicated():
@@ -14,6 +19,20 @@ def test_replacement_is_non_cascading_and_not_duplicated():
 def test_leftmost_match_uses_longest_rule_at_same_position():
     rules = (ReplacementRule("项目", "A"), ReplacementRule("项目编号", "B"))
     assert replace_text("项目编号：01", rules).text == "B：01"
+
+
+def test_same_length_rules_use_original_rule_order():
+    rules = (ReplacementRule("编号", "first"), ReplacementRule("编号", "second"))
+    matches = find_matches("编号", rules)
+    assert matches[0].replacement == "first"
+
+
+def test_match_advances_past_entire_range_and_skips_overlap():
+    rule = ReplacementRule("aba", "X")
+    matches = find_matches("ababa", (rule,))
+    assert len(matches) == 1
+    assert (matches[0].start, matches[0].end) == (0, 3)
+    assert replace_text("ababa", (rule,)).text == "Xba"
 
 
 def test_soft_line_break_is_matched_exactly():
@@ -47,3 +66,17 @@ def test_rule_rejects_text_longer_than_10000_characters():
     with pytest.raises(RuleValidationError, match="10000"):
         validate_rule("甲" * 10001, "乙", ())
 
+
+def test_rule_accepts_10000_characters_on_both_sides():
+    rule = validate_rule("甲" * 10000, "乙" * 10000, ())
+    assert len(rule.before) == len(rule.after) == 10000
+
+
+def test_rule_rejects_replacement_longer_than_10000_characters():
+    with pytest.raises(RuleValidationError, match="10000"):
+        validate_rule("甲", "乙" * 10001, ())
+
+
+def test_rule_matches_surrounding_spaces_and_punctuation_exactly():
+    rule = ReplacementRule(" 项目! ", "替")
+    assert replace_text(" 项目! 项目!", (rule,)).text == "替项目!"

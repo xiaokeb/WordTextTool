@@ -72,4 +72,3 @@ def replace_text(text: str, rules: Sequence[ReplacementRule]) -> ReplacementOutc
         cursor = match.end
     parts.append(text[cursor:])
     return ReplacementOutcome(text="".join(parts), count=len(matches))
-
