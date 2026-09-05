@@ -6,6 +6,7 @@ from docx.oxml.ns import qn
 from docx.opc.constants import RELATIONSHIP_TYPE as RT
 from docx.shared import Inches
 from docx.text.run import Run
+from lxml import etree
 
 from word_text_tool.document_processor import replace_document
 from word_text_tool.models import ReplacementRule
@@ -38,6 +39,17 @@ def add_field_marker(container, marker_type):
     return run
 
 
+def add_wrapped_field_marker(container, marker_type, wrapper_tag):
+    wrapper = OxmlElement(wrapper_tag)
+    marker_container = wrapper
+    if wrapper_tag == "w:sdt":
+        marker_container = OxmlElement("w:sdtContent")
+        wrapper.append(marker_container)
+    add_field_marker(marker_container, marker_type)
+    container.append(wrapper)
+    return wrapper
+
+
 def add_xml_run(container, text):
     run = OxmlElement("w:r")
     node = OxmlElement("w:t")
@@ -49,6 +61,10 @@ def add_xml_run(container, text):
 
 def text_of(element):
     return "".join(node.text or "" for node in element.xpath(".//w:t"))
+
+
+def xml_of(element):
+    return etree.tostring(element)
 
 
 def test_body_tables_and_nested_tables_are_processed():
@@ -212,6 +228,73 @@ def test_complex_field_enclosing_hyperlink_keeps_link_result_unchanged():
     paragraph.add_run("旧值")
     assert replace_document(document, RULES) == 1
     assert hyperlink.xml == before
+
+
+@pytest.mark.parametrize(
+    "begin_wrapper,end_wrapper",
+    [("w:ins", None), (None, "w:smartTag")],
+)
+def test_wrapped_field_boundary_protects_result_and_releases_following_text(
+    begin_wrapper, end_wrapper
+):
+    document = Document()
+    paragraph = document.add_paragraph()
+    if begin_wrapper:
+        begin = add_wrapped_field_marker(paragraph._p, "begin", begin_wrapper)
+    else:
+        begin = add_field_marker(paragraph._p, "begin")
+    add_field_marker(paragraph._p, "separate")
+    result = add_xml_run(paragraph._p, "旧值")
+    if end_wrapper:
+        end = add_wrapped_field_marker(paragraph._p, "end", end_wrapper)
+    else:
+        end = add_field_marker(paragraph._p, "end")
+    editable = add_xml_run(paragraph._p, "旧值")
+    boundary_xml = (xml_of(begin), xml_of(end))
+
+    assert replace_document(document, RULES) == 1
+    assert text_of(result) == "旧值"
+    assert text_of(editable) == "新值"
+    assert (xml_of(begin), xml_of(end)) == boundary_xml
+
+
+def test_nested_fields_track_markers_inside_revision_smart_tag_and_content_control():
+    document = Document()
+    paragraph = document.add_paragraph()
+    wrappers = [add_wrapped_field_marker(paragraph._p, "begin", "w:ins")]
+    add_field_marker(paragraph._p, "separate")
+    protected = [add_xml_run(paragraph._p, "旧值")]
+    wrappers.append(add_wrapped_field_marker(paragraph._p, "begin", "w:smartTag"))
+    add_field_marker(paragraph._p, "separate")
+    protected.append(add_xml_run(paragraph._p, "旧值"))
+    wrappers.append(add_wrapped_field_marker(paragraph._p, "end", "w:sdt"))
+    protected.append(add_xml_run(paragraph._p, "旧值"))
+    wrappers.append(add_wrapped_field_marker(paragraph._p, "end", "w:smartTag"))
+    editable = add_xml_run(paragraph._p, "旧值")
+    wrapper_xml = [xml_of(wrapper) for wrapper in wrappers]
+
+    assert replace_document(document, RULES) == 1
+    assert [text_of(run) for run in protected] == ["旧值"] * 3
+    assert text_of(editable) == "新值"
+    assert [xml_of(wrapper) for wrapper in wrappers] == wrapper_xml
+
+
+def test_textbox_field_marker_does_not_change_surrounding_story_field_state():
+    document = Document()
+    paragraph = document.add_paragraph()
+    drawing_run = OxmlElement("w:r")
+    drawing = OxmlElement("w:drawing")
+    textbox = OxmlElement("w:txbxContent")
+    textbox_paragraph = OxmlElement("w:p")
+    add_field_marker(textbox_paragraph, "begin")
+    textbox.append(textbox_paragraph)
+    drawing.append(textbox)
+    drawing_run.append(drawing)
+    paragraph._p.append(drawing_run)
+    editable = add_xml_run(paragraph._p, "旧值")
+
+    assert replace_document(document, RULES) == 1
+    assert text_of(editable) == "新值"
 
 
 @pytest.mark.parametrize("tag", ["w:drawing", "w:object", "w:pict", "w:footnoteReference"])

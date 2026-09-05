@@ -19,6 +19,12 @@ _FIELD_TYPE = qn("w:fldCharType")
 _BREAK = qn("w:br")
 _BREAK_TYPE = qn("w:type")
 _SAFE_CHILDREN = {qn(name) for name in ("w:rPr", "w:t", "w:tab", "w:br", "w:cr")}
+_FIELD_WRAPPERS = {
+    qn(name) for name in (
+        "w:hyperlink", "w:ins", "w:del", "w:moveFrom", "w:moveTo",
+        "w:smartTag", "w:customXml", "w:sdt", "w:sdtContent", "w:dir", "w:bdo",
+    )
+}
 _STORY_NAMES = (
     "header", "footer", "first_page_header", "first_page_footer",
     "even_page_header", "even_page_footer",
@@ -39,6 +45,15 @@ class _FieldState:
             elif kind == "end":
                 self.depth = max(0, self.depth - 1)
         return bool(markers)
+
+
+def _observe_wrapped_fields(element, fields: _FieldState) -> None:
+    """Track wrapped field markers without making wrapped text editable."""
+    for child in element:
+        if child.tag == _RUN:
+            fields.observe(child)
+        elif child.tag in _FIELD_WRAPPERS:
+            _observe_wrapped_fields(child, fields)
 
 
 def _iter_container_paragraphs(container, seen_cells: set) -> Iterator[Paragraph]:
@@ -86,8 +101,11 @@ def _iter_run_groups(container, paragraph: Paragraph, fields: _FieldState):
             # Every link is an independent region. Share field state so code and
             # results stay protected even when markers occur inside hyperlinks.
             yield from _iter_run_groups(child, paragraph, fields)
-        # fldSimple and all other unsupported paragraph children are boundaries.
-        # Do not descend into drawings, text boxes, or automatic simple fields.
+        elif child.tag in _FIELD_WRAPPERS:
+            # Revision, smart-tag, and content-control text stays unsupported,
+            # but field markers inside those wrappers still affect later runs.
+            _observe_wrapped_fields(child, fields)
+        # fldSimple and all unsupported paragraph children remain boundaries.
     if group:
         yield tuple(group)
 
