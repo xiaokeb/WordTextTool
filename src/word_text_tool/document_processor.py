@@ -1,14 +1,25 @@
 """Replace text in supported DOCX stories without rewriting fields or rich runs."""
 
+import os
+import tempfile
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
+from pathlib import Path
+from zipfile import BadZipFile
 
+from docx import Document
 from docx.document import Document as DocumentObject
+from docx.opc.exceptions import PackageNotFoundError
 from docx.oxml.ns import qn
 from docx.text.paragraph import Paragraph
 from docx.text.run import Run
 
-from word_text_tool.models import ReplacementRule
+from word_text_tool.file_service import (
+    OutputDirectoryError,
+    next_output_path,
+    prepare_output_directory,
+)
+from word_text_tool.models import FileResult, FileStatus, ReplacementRule
 from word_text_tool.replacement_engine import replace_runs
 
 
@@ -141,3 +152,89 @@ def replace_document(document: DocumentObject, rules: Sequence[ReplacementRule])
             seen_parts.add(part_name)
             total += _replace_story(story, rules)
     return total
+
+
+class DocumentProcessor:
+    """Process one DOCX and publish a verified copy without changing its source."""
+
+    def process(
+        self,
+        source: Path,
+        rules: Sequence[ReplacementRule],
+        custom_output_dir: Path | None,
+    ) -> FileResult:
+        original_source = Path(source)
+        result_source = original_source
+        temporary_path: Path | None = None
+        try:
+            result_source = original_source.resolve(strict=False)
+            document = Document(result_source)
+            replacement_count = replace_document(document, rules)
+            if replacement_count == 0:
+                return FileResult(
+                    result_source,
+                    FileStatus.UNMATCHED,
+                    "未找到匹配内容",
+                )
+
+            output_dir = prepare_output_directory(
+                result_source, custom_output_dir
+            )
+            with tempfile.NamedTemporaryFile(
+                dir=output_dir,
+                prefix=".word-text-tool-",
+                suffix=".docx",
+                delete=False,
+            ) as temporary:
+                temporary_path = Path(temporary.name)
+
+            document.save(temporary_path)
+            Document(temporary_path)
+
+            while True:
+                output_path = next_output_path(result_source, output_dir)
+                try:
+                    os.rename(temporary_path, output_path)
+                except FileExistsError:
+                    continue
+                temporary_path = None
+                return FileResult(
+                    result_source,
+                    FileStatus.SUCCESS,
+                    "修改完成，已保存",
+                    output_path,
+                    replacement_count,
+                )
+        except (PackageNotFoundError, BadZipFile):
+            return FileResult(
+                result_source,
+                FileStatus.FAILED,
+                "文档损坏、已加密或不是有效的 DOCX 文件",
+            )
+        except OutputDirectoryError as exc:
+            return FileResult(result_source, FileStatus.FAILED, str(exc))
+        except PermissionError:
+            return FileResult(
+                result_source,
+                FileStatus.FAILED,
+                "文件被占用或没有访问权限",
+            )
+        except OSError:
+            return FileResult(
+                result_source,
+                FileStatus.FAILED,
+                "文件处理失败，请检查文件占用状态和保存目录",
+            )
+        except Exception:
+            return FileResult(
+                result_source,
+                FileStatus.FAILED,
+                "文档处理失败，请确认文件有效且未加密",
+            )
+        finally:
+            if temporary_path is not None:
+                try:
+                    temporary_path.unlink(missing_ok=True)
+                except OSError:
+                    # Cleanup is best-effort and must not hide the file result.
+                    pass

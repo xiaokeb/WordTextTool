@@ -1,3 +1,5 @@
+import os
+
 import pytest
 from docx import Document
 from docx.enum.text import WD_BREAK
@@ -8,8 +10,8 @@ from docx.shared import Inches
 from docx.text.run import Run
 from lxml import etree
 
-from word_text_tool.document_processor import replace_document
-from word_text_tool.models import ReplacementRule
+from word_text_tool.document_processor import DocumentProcessor, replace_document
+from word_text_tool.models import FileStatus, ReplacementRule
 
 
 RULES = (ReplacementRule("旧值", "新值"), ReplacementRule("新值", "再次替换"))
@@ -348,3 +350,239 @@ def test_no_match_preserves_all_document_xml_and_paragraph_boundary():
     before = document._element.xml
     assert replace_document(document, RULES) == 0
     assert document._element.xml == before
+
+
+def save_docx(path, text):
+    document = Document()
+    document.add_paragraph(text)
+    document.save(path)
+
+
+def test_process_saves_verified_copy_and_keeps_source(tmp_path):
+    source = tmp_path / "合同.docx"
+    output_dir = tmp_path / "output"
+    output_dir.mkdir()
+    save_docx(source, "xxx公司")
+    source_bytes = source.read_bytes()
+
+    result = DocumentProcessor().process(
+        source, (ReplacementRule("xxx公司", "yyy公司"),), output_dir
+    )
+
+    assert result.status is FileStatus.SUCCESS
+    assert result.replacements == 1
+    assert result.output == output_dir / "合同 - 修改版.docx"
+    assert source.read_bytes() == source_bytes
+    assert Document(source).paragraphs[0].text == "xxx公司"
+    assert Document(result.output).paragraphs[0].text == "yyy公司"
+    assert not any(
+        path.name.startswith(".word-text-tool-")
+        for path in output_dir.iterdir()
+    )
+
+
+def test_process_does_not_create_output_when_unmatched(tmp_path):
+    source = tmp_path / "合同.docx"
+    output_dir = tmp_path / "output"
+    output_dir.mkdir()
+    save_docx(source, "没有匹配")
+
+    result = DocumentProcessor().process(
+        source, (ReplacementRule("旧值", "新值"),), output_dir
+    )
+
+    assert result.status is FileStatus.UNMATCHED
+    assert result.output is None
+    assert result.replacements == 0
+    assert list(output_dir.iterdir()) == []
+
+
+def test_process_uses_default_output_directory(tmp_path):
+    source = tmp_path / "合同.docx"
+    save_docx(source, "旧值")
+
+    result = DocumentProcessor().process(
+        source, (ReplacementRule("旧值", "新值"),), None
+    )
+
+    assert result.status is FileStatus.SUCCESS
+    assert result.output == tmp_path / "修改版" / "合同 - 修改版.docx"
+    assert Document(result.output).paragraphs[0].text == "新值"
+
+
+def test_repeated_processing_never_overwrites(tmp_path):
+    source = tmp_path / "合同.docx"
+    output_dir = tmp_path / "output"
+    output_dir.mkdir()
+    save_docx(source, "旧值")
+    processor = DocumentProcessor()
+
+    first = processor.process(
+        source, (ReplacementRule("旧值", "第一次"),), output_dir
+    )
+    second = processor.process(
+        source, (ReplacementRule("旧值", "第二次"),), output_dir
+    )
+
+    assert first.output.name == "合同 - 修改版.docx"
+    assert second.output.name == "合同 - 修改版 (1).docx"
+    assert Document(first.output).paragraphs[0].text == "第一次"
+    assert Document(second.output).paragraphs[0].text == "第二次"
+    assert Document(source).paragraphs[0].text == "旧值"
+
+
+def test_process_reports_corrupt_docx_without_internal_details_or_output(tmp_path):
+    source = tmp_path / "损坏.docx"
+    source.write_text("not a package", encoding="utf-8")
+
+    result = DocumentProcessor().process(
+        source, (ReplacementRule("旧值", "新值"),), tmp_path
+    )
+
+    assert result.status is FileStatus.FAILED
+    assert result.message == "文档损坏、已加密或不是有效的 DOCX 文件"
+    assert result.output is None
+    assert "package" not in result.message.lower()
+    assert not any(path.name.startswith("损坏 - 修改版") for path in tmp_path.iterdir())
+
+
+def test_process_round_trip_preserves_format_and_hyperlink_relationship(tmp_path):
+    source = tmp_path / "格式链接.docx"
+    output_dir = tmp_path / "output"
+    output_dir.mkdir()
+    document = Document()
+    paragraph = document.add_paragraph()
+    formatted = paragraph.add_run("旧值正文")
+    formatted.bold = True
+    hyperlink, rid = add_hyperlink(paragraph, "旧", "值链接")
+    link_run_properties = [run.rPr.xml for run in hyperlink.xpath("./w:r")]
+    source_relationship = paragraph.part.rels[rid].target_ref
+    source_paragraph_xml = paragraph._p.xml
+    document.save(source)
+
+    result = DocumentProcessor().process(
+        source, (ReplacementRule("旧值", "新值"),), output_dir
+    )
+
+    assert result.status is FileStatus.SUCCESS
+    reopened_source = Document(source)
+    reopened_output = Document(result.output)
+    assert reopened_source.paragraphs[0]._p.xml == source_paragraph_xml
+    output_paragraph = reopened_output.paragraphs[0]
+    assert output_paragraph.runs[0].text == "新值正文"
+    assert output_paragraph.runs[0].bold is True
+    output_link = output_paragraph._p.xpath("./w:hyperlink")[0]
+    output_rid = output_link.get(qn("r:id"))
+    assert text_of(output_link) == "新值链接"
+    assert reopened_output.part.rels[output_rid].target_ref == source_relationship
+    assert [run.rPr.xml for run in output_link.xpath("./w:r")] == link_run_properties
+
+
+def test_failed_reopen_removes_temporary_file(tmp_path, monkeypatch):
+    import word_text_tool.document_processor as module
+
+    source = tmp_path / "合同.docx"
+    output_dir = tmp_path / "output"
+    output_dir.mkdir()
+    save_docx(source, "旧值")
+    original_document = module.Document
+    calls = 0
+
+    def controlled_document(path):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise ValueError("verify failed with internal details")
+        return original_document(path)
+
+    monkeypatch.setattr(module, "Document", controlled_document)
+
+    result = DocumentProcessor().process(
+        source, (ReplacementRule("旧值", "新值"),), output_dir
+    )
+
+    assert result.status is FileStatus.FAILED
+    assert result.message == "文档处理失败，请确认文件有效且未加密"
+    assert "internal" not in result.message
+    assert list(output_dir.iterdir()) == []
+
+
+def test_cleanup_failure_does_not_escape_or_hide_processing_failure(
+    tmp_path, monkeypatch
+):
+    import word_text_tool.document_processor as module
+
+    source = tmp_path / "合同.docx"
+    output_dir = tmp_path / "output"
+    output_dir.mkdir()
+    save_docx(source, "旧值")
+    original_document = module.Document
+    calls = 0
+
+    def controlled_document(path):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise ValueError("primary processing failure")
+        return original_document(path)
+
+    original_unlink = module.Path.unlink
+
+    def controlled_unlink(path, *, missing_ok=False):
+        if path.name.startswith(".word-text-tool-"):
+            raise PermissionError("cleanup failure")
+        return original_unlink(path, missing_ok=missing_ok)
+
+    monkeypatch.setattr(module, "Document", controlled_document)
+    monkeypatch.setattr(module.Path, "unlink", controlled_unlink)
+
+    result = DocumentProcessor().process(
+        source, (ReplacementRule("旧值", "新值"),), output_dir
+    )
+
+    assert result.status is FileStatus.FAILED
+    assert result.message == "文档处理失败，请确认文件有效且未加密"
+
+
+def test_publish_collision_race_retries_without_overwriting(tmp_path, monkeypatch):
+    import word_text_tool.document_processor as module
+
+    source = tmp_path / "合同.docx"
+    output_dir = tmp_path / "output"
+    output_dir.mkdir()
+    save_docx(source, "旧值")
+    original_rename = module.os.rename
+    calls = 0
+
+    def collide_once(temporary_path, output_path):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            output_path.write_bytes(b"competing output")
+            raise FileExistsError(output_path)
+        return original_rename(temporary_path, output_path)
+
+    monkeypatch.setattr(module.os, "rename", collide_once)
+
+    result = DocumentProcessor().process(
+        source, (ReplacementRule("旧值", "新值"),), output_dir
+    )
+
+    assert result.status is FileStatus.SUCCESS
+    assert result.output.name == "合同 - 修改版 (1).docx"
+    assert (output_dir / "合同 - 修改版.docx").read_bytes() == b"competing output"
+    assert Document(result.output).paragraphs[0].text == "新值"
+
+
+@pytest.mark.skipif(os.name != "nt", reason="产品仅支持 Windows，锁定 os.rename 的不覆盖语义")
+def test_windows_rename_does_not_overwrite_existing_destination(tmp_path):
+    source = tmp_path / "temporary.docx"
+    destination = tmp_path / "published.docx"
+    source.write_bytes(b"new")
+    destination.write_bytes(b"existing")
+
+    with pytest.raises(FileExistsError):
+        os.rename(source, destination)
+
+    assert source.read_bytes() == b"new"
+    assert destination.read_bytes() == b"existing"
