@@ -1,2 +1,9 @@
 .worktrees/
 .superpowers/
+.venv/
+__pycache__/
+.pytest_cache/
+*.py[cod]
+build/
+dist/*
+!dist/.gitkeep
