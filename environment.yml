@@ -1,0 +1,8 @@
+name: WordMod
+channels:
+  - defaults
+dependencies:
+  - python=3.13.15
+  - pip
+  - pip:
+      - -r requirements-lock.txt

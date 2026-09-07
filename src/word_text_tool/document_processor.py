@@ -11,6 +11,7 @@ from docx import Document
 from docx.document import Document as DocumentObject
 from docx.opc.exceptions import PackageNotFoundError
 from docx.oxml.ns import qn
+from docx.table import Table
 from docx.text.paragraph import Paragraph
 from docx.text.run import Run
 
@@ -36,6 +37,7 @@ _FIELD_WRAPPERS = {
         "w:smartTag", "w:customXml", "w:sdt", "w:sdtContent", "w:dir", "w:bdo",
     )
 }
+_FIELD_BLOCKS = {qn(name) for name in ("w:p", "w:tbl", "w:tr", "w:tc")}
 _STORY_NAMES = (
     "header", "footer", "first_page_header", "first_page_footer",
     "even_page_header", "even_page_footer",
@@ -63,23 +65,34 @@ def _observe_wrapped_fields(element, fields: _FieldState) -> None:
     for child in element:
         if child.tag == _RUN:
             fields.observe(child)
-        elif child.tag in _FIELD_WRAPPERS:
+        elif child.tag in _FIELD_WRAPPERS or child.tag in _FIELD_BLOCKS:
             _observe_wrapped_fields(child, fields)
 
 
-def _iter_container_paragraphs(container, seen_cells: set) -> Iterator[Paragraph]:
+def _iter_container_paragraphs(
+    container, seen_cells: set, fields: _FieldState
+) -> Iterator[Paragraph]:
     """Keep XML document order, including tables between field paragraphs."""
-    for block in container.iter_inner_content():
-        if isinstance(block, Paragraph):
-            yield block
-        else:
+    element = container._element
+    if isinstance(container, DocumentObject):
+        element = element.body
+    for child in element:
+        if child.tag == qn("w:p"):
+            yield Paragraph(child, container)
+        elif child.tag == qn("w:tbl"):
+            block = Table(child, container)
             for row in block.rows:
                 for cell in row.cells:
                     # Keep elements alive in the set; Python id values can be reused.
                     if cell._tc in seen_cells:
                         continue
                     seen_cells.add(cell._tc)
-                    yield from _iter_container_paragraphs(cell, seen_cells)
+                    yield from _iter_container_paragraphs(cell, seen_cells, fields)
+        elif child.tag in _FIELD_WRAPPERS:
+            # Block content controls/revisions are protected, but their markers
+            # still participate in this story. Never descend into drawings or
+            # textboxes: those carry a separate field state.
+            _observe_wrapped_fields(child, fields)
 
 
 def _is_safe_text_run(element) -> bool:
@@ -124,7 +137,7 @@ def _iter_run_groups(container, paragraph: Paragraph, fields: _FieldState):
 def _replace_story(container, rules: Sequence[ReplacementRule]) -> int:
     fields = _FieldState()
     total = 0
-    for paragraph in _iter_container_paragraphs(container, set()):
+    for paragraph in _iter_container_paragraphs(container, set(), fields):
         for group in _iter_run_groups(paragraph._p, paragraph, fields):
             total += replace_runs(group, rules)
     return total

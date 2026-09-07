@@ -4,11 +4,11 @@
 
 ## 当前状态
 
-项目已进入正式开发阶段，直接在根目录 `src/` 中开发。
+V1.0 功能、集中测试和修复复审完成，WordMod 环境下 127 项测试通过；EXE 已在本机 Windows 11 成功启动并正常退出。Windows 10、无 Python 干净机器及 Word 人工排版验收尚未执行。发布与同步记录见 `docs/开发全流程.md` 第 16 章。
 
 - 已确认首版范围和交互设计；
 - 已建立 `docs/`、`src/`、`dist/` 目录；
-- 已实现数据模型、非级联匹配、跨 Run 格式继承和 DOCX 区域遍历；界面与打包尚在开发；
+- 已实现核心替换、安全保存、后台处理和 PyQt6 单页界面；
 - Excel 编号、PDF 导出和文件名后缀修改不属于首版。
 
 ## 首版范围
@@ -32,7 +32,10 @@
 ├── docs/                 # 需求、参考资料、全流程设计和后续实施计划
 ├── src/                  # Python 源码目录
 ├── tests/                # 自动化测试
-├── dist/                 # 后续 EXE 与分发说明目录（当前为空）
+├── dist/                 # 构建后的 EXE 与分发说明
+├── requirements.txt      # 开发、测试和打包依赖
+├── build.spec            # PyInstaller 单文件配置
+├── build.bat             # Windows 构建入口
 └── README.md
 ```
 
@@ -41,3 +44,46 @@
 ## 后续版本
 
 后续候选能力包括旧版 `.doc` 转换、高级 Word 内容区域、规则持久化与导入导出、递归扫描、正则或模糊匹配、Excel 编号、Excel/WPS 转 PDF，以及文件名后缀管理。它们均不进入首版代码和验收范围。
+
+## 使用方法
+
+构建完成后双击 `dist/Word 文本处理工具.exe`；最终 Release 的 EXE 自带运行依赖，无需另行安装 Python 或 Microsoft Word。
+
+1. 点击“浏览文件”/“添加文件”多选文档，或“浏览文件夹”扫描当前层。只接受不超过 50 MiB 的 `.docx`；`.doc`、重复、超大或不可读文件会提示跳过。
+2. 在“替换前：”“替换后：”输入文本，点击“添加规则”。规则在只读表格中依次展示；选中整行后点击“删除规则”才会删除。
+3. 长规则支持滚动与双击只读详情。两侧各最多 10,000 字符；替换前不能是纯空白。替换后留空表示删除，添加前需要确认。
+4. 可选择自定义保存目录；不选择时，保存到每个源文件同级的“修改版”文件夹。
+5. 点击“开始处理”。处理期间文件、规则与保存设置锁定；点击“取消处理”会等当前文件安全完成后停止。处理中关闭窗口也须确认并等待当前文件完成。
+6. 完成后查看“处理成功、未匹配、已跳过、处理失败”四类详情，可复制文字。关闭程序后规则清空，不自动保存或导出。
+
+## 替换与保存说明
+
+- 使用精确匹配；英文字符区分大小写，空格、标点和软换行必须与原文一致，没有正则/模糊匹配开关。
+- 同一位置以较长规则优先；新生成文字不会参与本轮后续替换。例如同时设置 `xxx公司 → yyy公司`、`yyy公司 → zzz公司`，原文 `xxx公司` 只变为 `yyy公司`。
+- 请准确录入完整查找内容：若原文为 `xxx公司`，只查找 `xxx` 并替换成 `yyy公司`，精确替换会保留原有“公司”后缀。程序不猜测或自动删除规则之外的文字。
+- 新文字继承匹配首字符的 Run 格式；跨独立段落不匹配。自动域、文本框、艺术字、批注、脚注、尾注和修订/内容控件文字不处理；带图片等复杂内容的 Run 为保守保护边界。
+- 输出为 `原名 - 修改版.docx`，已有同名时追加 ` (1)`、` (2)`；源文件和已有输出均不覆盖。没有命中不产生副本。
+- 输出先写入目标目录临时文件，重开验证成功后再发布最终文件。异常会给出中文原因；极端权限问题可能导致隐藏临时文件无法清理。
+
+## 开发、测试和打包
+
+目标为 Windows 10/11 x64；项目统一使用 Conda **WordMod** 环境、Python **3.13.15**。命令均在项目根目录执行，整个项目不使用 worktrees。
+
+```powershell
+conda activate WordMod
+python -m pip install -r requirements-lock.txt
+python -m pip check
+python src\main.py
+python -m pytest -v
+.\build.bat
+```
+
+首次创建环境可执行 `conda env create -f environment.yml`。已有 `WordMod` 时使用上述安装命令，不另建 `.venv`。`requirements.txt` 固定项目直接依赖，`requirements-lock.txt` 固定完整安装版本；更新依赖时应同时更新两个文件并重新测试。
+
+开发流程：Superpowers 仅用于规划和边界规定，确认后直接在本目录实现；全部功能完成后集中联调、安全检查和最终审查，再提交发布。不编辑 `.superpowers/`，节点与版本记录统一在 `docs/开发全流程.md`、`docs/实施计划.md`，大版本单独编写发布说明。
+
+PyCharm 已配置的解释器为 `E:\Backend_Env\Python\miniconda3\envs\WordMod\python.exe`，运行入口为 `src/main.py`，使用模块 SDK 即可；工作目录可为项目根目录或 `src`。无需修改已有 PyCharm 配置。
+
+未激活环境时可执行 `conda run --no-capture-output -n WordMod python src/main.py` 或 `conda run --no-capture-output -n WordMod python -m pytest -v`。`build.bat` 始终调用 `WordMod`，不会误用 base。产物为 `dist/Word 文本处理工具.exe` 和 `dist/README.md`，不分发 `.py` 源文件。
+
+本工具采用 PyQt6；对外分发应遵守其 GPL 或商业许可及其他依赖的许可要求。

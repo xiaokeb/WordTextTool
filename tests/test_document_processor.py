@@ -299,6 +299,73 @@ def test_textbox_field_marker_does_not_change_surrounding_story_field_state():
     assert text_of(editable) == "新值"
 
 
+@pytest.mark.parametrize("location", ["body", "header", "cell"])
+@pytest.mark.parametrize("wrapped_marker", ["begin", "end"])
+def test_block_content_control_tracks_field_boundaries_without_editing_wrapper(
+    location, wrapped_marker
+):
+    document = Document()
+    container = document
+    if location == "header":
+        container = document.sections[0].header
+    elif location == "cell":
+        container = document.add_table(rows=1, cols=1).cell(0, 0)
+    anchor = container.add_paragraph()
+    wrapper = OxmlElement("w:sdt")
+    content = OxmlElement("w:sdtContent")
+    wrapper.append(content)
+    protected_paragraph = OxmlElement("w:p")
+    content.append(protected_paragraph)
+    add_xml_run(protected_paragraph, "旧值控件")
+    add_field_marker(protected_paragraph, wrapped_marker)
+    if wrapped_marker == "begin":
+        anchor._p.addprevious(wrapper)
+        protected_result = anchor.add_run("旧值域结果")
+        add_field_marker(anchor._p, "end")
+    else:
+        add_field_marker(anchor._p, "begin")
+        protected_result = anchor.add_run("旧值域结果")
+        anchor._p.addnext(wrapper)
+    editable = container.add_paragraph("旧值正文")
+    preserved = xml_of(wrapper)
+
+    assert replace_document(document, RULES) == 1
+    assert protected_result.text == "旧值域结果"
+    assert editable.text == "新值正文"
+    assert xml_of(wrapper) == preserved
+
+
+@pytest.mark.parametrize("drawing_tag", ["w:drawing", "w:pict"])
+def test_block_wrapper_textbox_does_not_end_main_story_field(drawing_tag):
+    document = Document()
+    anchor = document.add_paragraph()
+    wrapper = OxmlElement("w:sdt")
+    content = OxmlElement("w:sdtContent")
+    wrapper.append(content)
+    paragraph = OxmlElement("w:p")
+    content.append(paragraph)
+    add_field_marker(paragraph, "begin")
+    run = OxmlElement("w:r")
+    drawing = OxmlElement(drawing_tag)
+    textbox = OxmlElement("w:txbxContent")
+    textbox_paragraph = OxmlElement("w:p")
+    add_field_marker(textbox_paragraph, "end")
+    textbox.append(textbox_paragraph)
+    drawing.append(textbox)
+    run.append(drawing)
+    paragraph.append(run)
+    anchor._p.addprevious(wrapper)
+    protected = anchor.add_run("旧值域结果")
+    add_field_marker(anchor._p, "end")
+    editable = anchor.add_run("旧值正文")
+    preserved = xml_of(wrapper)
+
+    assert replace_document(document, RULES) == 1
+    assert protected.text == "旧值域结果"
+    assert editable.text == "新值正文"
+    assert xml_of(wrapper) == preserved
+
+
 @pytest.mark.parametrize("tag", ["w:drawing", "w:object", "w:pict", "w:footnoteReference"])
 @pytest.mark.parametrize("inside_hyperlink", [False, True])
 def test_unsafe_run_xml_is_preserved_and_separates_matching_regions(tag, inside_hyperlink):
