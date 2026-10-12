@@ -8,3 +8,7 @@ pytest==9.1.1
 pytest-qt==4.5.0
 PyInstaller==6.17.0
 pyinstaller-hooks-contrib==2025.11
+pywin32==312
+pypdf==6.20.0
+# Independent workbook verification and integration fixtures.
+openpyxl==3.1.5

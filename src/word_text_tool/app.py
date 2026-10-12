@@ -13,7 +13,7 @@ def create_application(argv=None) -> QApplication:
         sys.argv if argv is None else argv
     )
     application.setApplicationName("Word 文本处理工具")
-    application.setApplicationVersion("1.0")
+    application.setApplicationVersion("2.0")
     application.setOrganizationName("WordTextTool")
     application.setFont(QFont("Microsoft YaHei UI", 10))
     return application

@@ -17,6 +17,7 @@ from PyQt6.QtWidgets import (
     QScrollArea,
     QVBoxLayout,
     QWidget,
+    QTabWidget,
 )
 
 from word_text_tool.batch_worker import BatchWorker
@@ -26,6 +27,8 @@ from word_text_tool.models import BatchSummary
 from word_text_tool.ui.file_panel import FilePanel
 from word_text_tool.ui.result_dialog import ResultDialog
 from word_text_tool.ui.rule_panel import RulePanel
+from word_text_tool.ui.number_panel import NumberPanel
+from word_text_tool.ui.rename_panel import RenamePanel
 
 
 _DEFAULT_OUTPUT_TEXT = "未选择，将保存到源文件所在目录的‘修改版’文件夹"
@@ -41,6 +44,8 @@ class MainWindow(QMainWindow):
         self._skipped_snapshot = ()
         self._close_after_worker = False
         self._result_dialogs: set[ResultDialog] = set()
+        self._close_after_extra = False
+        self._close_prompt_active = False
 
         self.setWindowTitle("Word 文本处理工具")
         self.setFont(QFont("Microsoft YaHei UI"))
@@ -122,7 +127,19 @@ class MainWindow(QMainWindow):
         content_layout.addLayout(action_row)
 
         scroll_area.setWidget(content)
-        self.setCentralWidget(scroll_area)
+        self.tabs = QTabWidget(self)
+        self.tabs.addTab(scroll_area, "文本替换")
+        self.number_panel = NumberPanel(self)
+        self.rename_panel = RenamePanel(self)
+        self.extra_panels = (self.number_panel, self.rename_panel)
+        for label, panel in zip(("记录编号", "后缀管理"), self.extra_panels):
+            page = QScrollArea(self)
+            page.setWidgetResizable(True)
+            page.setWidget(panel)
+            self.tabs.addTab(page, label)
+            panel.busy_changed.connect(lambda busy, p=panel: self._extra_busy(p, busy))
+            panel.idle.connect(self._extra_idle)
+        self.setCentralWidget(self.tabs)
 
         for button in self.findChildren(QPushButton):
             button.setMinimumWidth(110)
@@ -144,7 +161,7 @@ class MainWindow(QMainWindow):
         self.output_path_line_edit.setToolTip(display)
 
     def _start_processing(self) -> None:
-        if self.worker is not None:
+        if self.worker is not None or any(p.worker is not None for p in self.extra_panels):
             return
 
         files = self.file_panel.files()
@@ -291,6 +308,21 @@ class MainWindow(QMainWindow):
         self.start_button.setEnabled(not processing)
         self.clear_button.setEnabled(not processing)
         self.cancel_button.setEnabled(processing)
+        for panel in getattr(self, "extra_panels", ()):
+            panel.set_locked(processing)
+
+    def _extra_busy(self, source, busy):
+        self.file_panel.set_locked(busy)
+        self.rule_panel.set_locked(busy)
+        for button in (self.output_browse_button, self.start_button, self.clear_button):
+            button.setEnabled(not busy)
+        for panel in self.extra_panels:
+            if panel is not source:
+                panel.set_locked(busy)
+
+    def _extra_idle(self):
+        if self._close_after_extra and not any(p.worker is not None for p in self.extra_panels):
+            QTimer.singleShot(0, self.close)
 
     def _clear_all(self) -> None:
         has_content = bool(self.file_panel.files() or self.rule_panel.rules())
@@ -312,6 +344,28 @@ class MainWindow(QMainWindow):
         self.status_label.setText("准备就绪")
 
     def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802 - Qt API
+        active = next((p for p in self.extra_panels if p.worker is not None), None)
+        if active is not None:
+            if not self._close_after_extra:
+                self._close_prompt_active = True
+                try:
+                    answer = QMessageBox.question(self, "确认退出", "文件仍在处理，是否安全取消后退出？",
+                                                  QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                                                  QMessageBox.StandardButton.No)
+                finally:
+                    self._close_prompt_active = False
+                for panel in self.extra_panels:
+                    panel.flush_deferred(answer != QMessageBox.StandardButton.Yes)
+                if answer != QMessageBox.StandardButton.Yes:
+                    event.ignore()
+                    return
+                self._close_after_extra = True
+                active = next((p for p in self.extra_panels if p.worker is not None), None)
+            if active is not None:
+                active.cancel()
+                event.ignore()
+                return
+        self._close_after_extra = False
         worker = self.worker
         if worker is None:
             self._close_after_worker = False

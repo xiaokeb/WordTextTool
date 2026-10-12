@@ -23,6 +23,7 @@ class FileResult:
     message: str
     output: Path | None = None
     replacements: int = 0
+    outputs: tuple[Path, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

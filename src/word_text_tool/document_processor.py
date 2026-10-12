@@ -22,6 +22,8 @@ from word_text_tool.file_service import (
 )
 from word_text_tool.models import FileResult, FileStatus, ReplacementRule
 from word_text_tool.replacement_engine import replace_runs
+from word_text_tool.office_validation import inspect_package
+from word_text_tool.safe_output import OperationError, fingerprint, require_unchanged
 
 
 _RUN = qn("w:r")
@@ -181,7 +183,12 @@ class DocumentProcessor:
         temporary_path: Path | None = None
         try:
             result_source = original_source.resolve(strict=False)
+            if result_source.suffix.lower() != ".docx":
+                raise OperationError("仅支持 DOCX 文件")
+            snapshot = fingerprint(result_source)
+            inspect_package(result_source, excel=False)
             document = Document(result_source)
+            require_unchanged(result_source, snapshot)
             replacement_count = replace_document(document, rules)
             if replacement_count == 0:
                 return FileResult(
@@ -203,6 +210,7 @@ class DocumentProcessor:
 
             document.save(temporary_path)
             Document(temporary_path)
+            require_unchanged(result_source, snapshot)
 
             while True:
                 output_path = next_output_path(result_source, output_dir)
@@ -224,7 +232,7 @@ class DocumentProcessor:
                 FileStatus.FAILED,
                 "文档损坏、已加密或不是有效的 DOCX 文件",
             )
-        except OutputDirectoryError as exc:
+        except (OutputDirectoryError, OperationError) as exc:
             return FileResult(result_source, FileStatus.FAILED, str(exc))
         except PermissionError:
             return FileResult(
