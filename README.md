@@ -4,7 +4,7 @@
 
 ## 当前状态
 
-V2.0 功能、集中验证和最终构建完成，2026-10-12 最终 EXE 通过 Windows 11/WPS 自动与固定模式三表编号、PDF、源文件保护和正常启闭验证。WordMod 下 185 项自动化测试通过；具体提交、远程同步和发布回执见 `docs/开发全流程.md` 第 19 章。Microsoft Excel 的身份识别及兼容调用通过接口契约测试，本机没有真实 Excel，未做真机验收。按用户最新要求，以 Windows 11/WPS 为本次真实验收范围；Windows 10 和无 Python 干净机器不作为本次发布门槛，未验证状态继续保留。
+[V2.0 已于 2026-10-12 正式发布](https://github.com/xiaokeb/WordTextTool/releases/tag/V2.0)，发布代码为 `eda73a6`。最终 EXE 通过 Windows 11/WPS 自动与固定模式三表编号、PDF、源文件保护和正常启闭验证，185 项自动化测试通过，代码与标签已普通推送，6 个 Release 附件的远端 SHA256 与本地一致。具体回执见 `docs/开发全流程.md` 第 19 章。Microsoft Excel 的身份识别及兼容调用通过接口契约测试，本机没有真实 Excel，未做真机验收。按用户最新要求，以 Windows 11/WPS 为本次真实验收范围；Windows 10 和无 Python 干净机器未验证。
 
 - 三个功能页的参数独立，同一时刻全程序只运行一个批次；
 - Word 与重命名无需安装办公软件；编号和 PDF 需要本地可自动化的 WPS 表格或 Microsoft Excel；
